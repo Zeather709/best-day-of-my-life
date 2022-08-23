@@ -370,6 +370,8 @@ pre code {
 </div>
 
 
+<div id="wip" class="section level3">
+<h3>WIP</h3>
 <p>The best day of my life was when my partner asked me to marry him. He
 was curious whether he overpaid for the diamond he bought me (he thinks
 he got a great deal!) - so let’s see.</p>
@@ -382,6 +384,7 @@ model.</p>
 <p>P.S. There are some additional analyses, plots, etc. that are
 included in the <code>diamonds.r</code> file in github, which have not
 made it to this document.</p>
+</div>
 <div id="preparation-and-exploratory-data-analysis" class="section level1">
 <h1>Preparation and Exploratory Data Analysis</h1>
 <pre class="r"><code># Setup
@@ -700,8 +703,30 @@ poly</code></pre>
 ## Residual standard error: 0.1335 on 44207 degrees of freedom
 ## Multiple R-squared:  0.9832, Adjusted R-squared:  0.9832 
 ## F-statistic: 9.96e+04 on 26 and 44207 DF,  p-value: &lt; 2.2e-16</code></pre>
-<p>Wow! The polynomial regression appears to fit a lot better!</p>
+<p>Wow! The polynomial regression appears to fit a lot better! ##
+XGBoost Regression</p>
+<pre class="r"><code>#library(xgboost)
+#xgb &lt;- </code></pre>
 </div>
+</div>
+<div id="feature-importance" class="section level1">
+<h1>Feature Importance</h1>
+<pre class="r"><code>library(caret)</code></pre>
+<pre><code>## Loading required package: lattice</code></pre>
+<pre><code>## 
+## Attaching package: &#39;caret&#39;</code></pre>
+<pre><code>## The following object is masked from &#39;package:purrr&#39;:
+## 
+##     lift</code></pre>
+<pre class="r"><code>imp_poly &lt;- varImp(poly) %&gt;%
+  arrange(desc(Overall)) %&gt;%
+  cbind(feature = rownames(.))
+imp_mlm &lt;- varImp(mlm) %&gt;%
+  cbind(feature = rownames(.))
+
+imp &lt;- full_join(imp_poly, imp_mlm, by = &#39;feature&#39;) %&gt;%
+  rename(imp_mlm = Overall.y, imp_poly = Overall.x) %&gt;%
+  select(feature, imp_mlm, imp_poly)</code></pre>
 </div>
 
 
