@@ -1,0 +1,165 @@
+---
+title: "Best Day of My Life"
+author: "Heather Zurel"
+date: "2022-08-18"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### WIP
+The best day of my life was when my partner asked me to marry him.  He was curious whether he overpaid for the diamond he bought me (he thinks he got a great deal!) - so let's see. 
+
+I'm going to use the diamonds data set to train a regression model to predict the price of diamonds based on their physical properties, including size/carat, clarity, colour, etc. 
+
+The first step is some **exploratory data analysis** to see if we need to do anything to clean the data before training the model.
+
+P.S. There are some additional analyses, plots, etc. that are included in the `diamonds.r` file in github, which have not made it to this document.  
+
+# Preparation and Exploratory Data Analysis
+
+```{r prep, warning = FALSE, message = FALSE}
+# Setup
+library('tidyverse')
+library('GGally')
+
+# Import
+data(diamonds)
+
+# Exploratory 
+summary(diamonds)
+ggpairs(diamonds)
+```
+
+So the x, y, and z values correspond to the physical dimensions of the diamonds in millimeters - these correlate strongly with the carat value, which is a measure of the weight of the diamonds - this makes sense & we really don't need to include all of them.  Some ML models are sensitive to including multiple features which are strongly correlated with each other - this can lead to overfitting - so we will remove the x, y, and z variables before we train the model. 
+
+### Distribution of the Target Variable (Price in USD)
+Q-Q plots (or quantile-quantile plots) are used to quickly, visually identify the distribution of a single variable.  
+
+```{r qq, echo=TRUE, warning = FALSE, message = FALSE}
+qq_diamonds <- qqnorm((diamonds$price),main="Normal Q-Q Plot of Price");qqline((diamonds$price))
+# Meh
+
+qq_log_diamonds <- qqnorm(log(diamonds$price),main="Normal Q-Q Plot of log Price");qqline(log(diamonds$price))
+# Ooh this is a much better fit
+```
+```{r hist normal, warning = FALSE, message = FALSE}
+hist_norm <- ggplot(diamonds, aes(log(price))) 
+hist_norm + geom_histogram(aes(y = ..density..), colour = "black", fill = 'lightblue') + 
+  stat_function(fun = dnorm, args = list(mean = mean(log(diamonds$price)), sd = sd(log(diamonds$price))))
+
+```
+
+Based on the Q-Q plots and the  histogram, it appears that the log of the price follows a bimodal or multimodal distribution.  Let try another couple plots to see.  
+
+```{r violin ecdf, echo = TRUE, warning = FALSE}
+violin <- ggplot(diamonds, aes(x = color, y = log(price), fill = color))
+violin + geom_violin() + scale_y_log10() + facet_grid(clarity ~ cut)
+
+carat <- ggplot(data = diamonds, aes(x = carat, y = log(price), colour = color)) 
+carat + stat_ecdf() + facet_grid(clarity ~ cut)
+```
+
+Yep, this definitely looks like a multimodal distribution with multiple peaks in the distribution corresponding to increasing the carat of the diamond from 0.99 to 1 carat, 1.99 to 2 carats, etc. And smaller jumps around 1/2 carats. 
+
+### Variance of Numeric Variables
+
+One more thing I'm going to check is the variance of the numeric variables.  If the variance of any variable is >= 1 order of magnitude different from the others, we will standardize these values.  If the variance of one variable is much larger than others, it can over-emphasize the importance of these variables in training models. 
+
+```{r var}
+diamonds %>% summarise_if(is.numeric, list(mean = mean, var = var)) %>% t()
+```
+
+The `carat` variable is > 1 order of magnitude less than that of the `table` variable (and so close to 1 OOM smaller than `depth`), so we will go ahead and standardize all 3. 
+
+I think I have enough info for the next step...
+
+# Data Cleaning
+
+We are going to remove some variables that are strongly correlated with each other, leaving a single variable which captures that data contained in the other 3 variables.  
+
+We are going to convert the price to the log of the price. Since this data set is from 2017 and I am trying to predict the value of a diamond bought in 2021, we will also adjust for inflation (approx 10.55%).
+
+Another important consideration before training the models is to deal with the categorical data.  Often, these will be converted to "dummy variables" or one-hot-encoded.  This works when there is no natural ranking or order of the categories.  Here, the cut, clarity, and color all have a natural order.  For example, a diamond with a "good" cut is better than a diamond with a "fair" cut.  If you imported this data from r (`data(diamonds)) then these variables will already be factors with the correct order.  However, if you downloaded a csv of this data set, these will need to be converted from strings to ordered factors, so I will include the transformation step here (even though it shouldn't change anything in my data set - though  it appears that the 'color' variable is in the reverse order so I'll fix that too). Note: the levels in this function are assigned from worst to best.  
+
+After investigating the table and depth fields some more, these values are the ratio to the average diameter of the diamond. The table % influences the light performance of the diamond (i.e. how sparkly it looks).  The depth % affect the diamond's brilliance and fire (I'm not 100% sure what this means, but we'll see if it affects price). 
+
+```{r clean, echo = TRUE, warning = FALSE}
+diamonds <- diamonds %>%
+  mutate(price = price * 1.1055) %>%
+  mutate(log_price = log(price)) %>%
+  select(-price, -x, -y, -z) %>%
+  mutate(cut = factor(cut, levels = c('Fair', 'Good', 'Very Good', 'Premium', 'Ideal'), ordered = TRUE),
+         color = factor(color, levels = c('J', 'I', 'H', 'G', 'F', 'E', 'D'), ordered = TRUE),
+         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) %>%
+  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
+
+# This should show that these three variables are now ordered factors.
+str(diamonds)
+
+# Here's a little trick to get R to output the order all possible factor levels, instead of just the first few:
+min(diamonds$cut)
+min(diamonds$color)
+min(diamonds$clarity)
+
+# And let's check out the standardized variables:
+mean(diamonds$carat)
+sd(diamonds$carat)
+
+# The other two (table & depth) look similar too, you can use the code in diamonds.r to check for yourself. 
+```
+#### Looks good!  
+
+# Model Prep & Training
+Time to prepare the model for training:
+
+```{r ml prep}
+# Prep
+library(caTools)
+
+set.seed(42)
+
+split = sample.split(diamonds$log_price, SplitRatio = 0.8)
+diamonds_train = subset(diamonds, split == TRUE)
+diamonds_test = subset(diamonds, split == FALSE)
+
+glimpse(diamonds_test)
+```
+
+Now that the data set is split into the testing and training data sets, we will train a few different models, test their performance, and use the best one to make our prediction. 
+
+### Multiple Linear Regression
+```{r multi linear}
+mlm <- lm(log_price ~ ., diamonds_train)
+mlm
+summary(mlm)
+```
+## Polynomial Regression
+```{r poly}
+poly <- lm(log_price ~ poly(carat,3) + color + cut + clarity + poly(table,3) + poly(depth,3), diamonds_train)
+poly
+summary(poly)
+```
+Wow!  The polynomial regression appears to fit a lot better!
+## XGBoost Regression
+```{r xgb}
+#library(xgboost)
+#xgb <- 
+```
+
+# Feature Importance
+```{r imp}
+library(caret)
+
+imp_poly <- varImp(poly) %>%
+  arrange(desc(Overall)) %>%
+  cbind(feature = rownames(.))
+imp_mlm <- varImp(mlm) %>%
+  cbind(feature = rownames(.))
+
+imp <- full_join(imp_poly, imp_mlm, by = 'feature') %>%
+  rename(imp_mlm = Overall.y, imp_poly = Overall.x) %>%
+  select(feature, imp_mlm, imp_poly)
+
+```
