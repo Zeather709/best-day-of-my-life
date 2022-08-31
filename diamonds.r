@@ -1,5 +1,3 @@
-#install.packages("tidyverse")
-#install.packages("GGally")
 library('tidyverse')
 library('GGally')
 
@@ -18,7 +16,7 @@ qq_log_diamonds <- qqnorm(log(diamonds$price),main="Normal Q-Q Plot of log Price
 # Ooh this is a much better fit
 
 hist_norm <- ggplot(diamonds, aes(log(price)))  + 
-  geom_histogram(aes(y = ..density..), colour = "black", fill = 'lightblue') + 
+  geom_histogram(aes(y = ..density..), colour = "black", fill = 'lightblue', bins = 75) + 
   stat_function(fun = dnorm, args = list(mean = mean(log(diamonds$price)), sd = sd(log(diamonds$price))))
 hist_norm
 
@@ -54,15 +52,13 @@ mean(diamonds$depth)
 sd(diamonds$depth)
 
 diamonds <- diamonds %>%
-  mutate(price = price * 1.1055,
-         table = table/100,
-         depth = depth/100) %>%
+  mutate(price = price * 1.1055) %>%
   mutate(log_price = log(price)) %>%
   select(-price, -x, -y, -z) %>%
   mutate(cut = factor(cut, levels = c('Fair', 'Good', 'Very Good', 'Premium', 'Ideal'), ordered = TRUE),
          color = factor(color, levels = c('J', 'I', 'H', 'G', 'F', 'E', 'D'), ordered = TRUE),
-         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) #%>%
-#  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
+         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) %>%
+  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
 
 
 mean(diamonds$carat)
@@ -75,7 +71,6 @@ mean(diamonds$depth)
 sd(diamonds$depth)
 
 
-install.packages("caTools")
 library(caTools)
 set.seed(42)
 split = sample.split(diamonds$log_price, SplitRatio = 0.8)
@@ -86,25 +81,113 @@ mlm <- lm(log_price ~ carat + color + cut + clarity + table + depth, diamonds_tr
 mlm
 summary(mlm)
 
-poly <- lm(log_price ~ poly(carat,3) + color + cut + clarity + poly(table,3) + poly(depth,3), train)
+poly <- lm(log_price ~ poly(carat,3) + color + cut + clarity + poly(table,3) + poly(depth,3), diamonds_train)
 poly
 summary(poly)
 
-install.packages('xgboost')
-library(xgboost)
 
-install.packages("e1071")
-install.packages("rminer")
+library(xgboost)
+diamonds_train_xgb <- diamonds_train %>%
+  mutate_if(is.factor, as.numeric)
+diamonds_test_xgb <- diamonds_test %>%
+  mutate_if(is.factor, as.numeric)
+
+xgb <- xgboost(data = as.matrix(diamonds_train_xgb[-7]), label = diamonds_train_xgb$log_price, nrounds = 6166)
+# the rmse stopped decreasing after 6166 rounds 
+
+xgb_pred = predict(xgb, as.matrix(diamonds_test_xgb[-7]))
+xgb_pred
+
+
+y_actual <- diamonds_test_xgb$log_price
+y_predicted <- xgb_pred
+
+test <- data.frame(cbind(y_actual, y_predicted))
+
+xgb_scatter <- ggplot(test, aes(10**y_actual, 10**y_predicted)) + geom_point(colour = 'black', alpha = 0.2) + geom_smooth(method = lm)
+xgb_scatter
+
+ggplot(diamonds_test_xgb[x, ], aes(x = carat, y = log_price)) + geom_point(colour = 'deepskyblue') + geom_line()
 
 library(e1071)
-library(rminer)
-svm <- svm(formula = log_price ~ .,
+svr <- svm(formula = log_price ~ .,
                 data = diamonds_train,
                 type = 'eps-regression',
                 kernel = 'radial')
-varImp(svm)
+# use the radial kernel if it is not a linear relationship between the independent and dependent variables.  
+# I think this is the case because the linear model is performing the worst so far
 
+# Decision Tree
+
+library(rpart)
+tree <- rpart(formula = log_price ~ .,
+                  data = diamonds_train,
+                  method = 'anova',
+                  model = TRUE)
+tree
+# Random Forest
+
+library(randomForest)
+rf <- randomForest(log_price ~ .,
+                   data = diamonds_train,
+                   ntree = 1000)
+rf
+# Model Performance
+install.packages("Metrics")
+library(Metrics)
+
+# Make predictions and compare model performance
+mlm_pred <- predict(mlm, diamonds_test)
+poly_pred <- predict(poly, diamonds_test)
+svr_pred <- predict(svr, diamonds_test)
+tree_pred <- predict(tree, diamonds_test)
+rf_pred <- predict(rf, diamonds_test)
+xgb_pred <- predict(xgb, as.matrix(diamonds_test_xgb[-7]))
+
+# Calculate residuals (i.e. how different the predictions are from the log_price of the test data set)
+
+xgb_resid <- diamonds_test_xgb$log_price - xgb_pred
+library(modelr)
+resid <- diamonds_test %>%  
+  spread_residuals(mlm, poly, svr, tree, rf) %>%
+  select(mlm, poly, svr, tree, rf) %>%
+  rename_with( ~ paste0(.x, '_resid')) %>%
+  cbind(xgb_resid)
+
+predictions <- diamonds_test %>%
+  select(log_price) %>%
+  cbind(mlm_pred) %>%
+  cbind(poly_pred) %>%
+  cbind(svr_pred) %>%
+  cbind(tree_pred) %>%
+  cbind(rf_pred) %>%
+  cbind(xgb_pred) %>%
+  cbind(resid)           # This will be useful for plotting later
+
+# Calculate R-squared - this describes how much of the variability is explained by the model - the closer to 1, the better
+
+mean_log_price <- mean(diamonds_test$log_price)
+tss =  sum((diamonds_test_xgb$log_price - mean_log_price)^2 )
+
+square <- function(x) {x**2}
+r2 <- function(x) {1 - x/tss}
+
+r2 <- resid %>%
+  mutate_all(square) %>%
+  summarize_all(sum) %>%
+  mutate_all(r2)
+r2
+
+xgb_rmse = sqrt(mean(residuals^2))
+
+
+diamonds_test_sample 
+ggplot(diamonds_test, aes(x = log_price, y = predictions$poly_pred, size = abs(resid$poly_resid))) +
+  geom_point(alpha = 0.1)
+
+# Feature Importance - maybe do this later
 library(caret)
+library(rminer)
 
 imp_poly <- varImp(poly) %>%
   arrange(desc(Overall)) %>%

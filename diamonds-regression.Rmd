@@ -45,10 +45,10 @@ qq_log_diamonds <- qqnorm(log(diamonds$price),main="Normal Q-Q Plot of log Price
 # Ooh this is a much better fit
 ```
 ```{r hist normal, warning = FALSE, message = FALSE}
-hist_norm <- ggplot(diamonds, aes(log(price))) 
-hist_norm + geom_histogram(aes(y = ..density..), colour = "black", fill = 'lightblue') + 
+hist_norm <- ggplot(diamonds, aes(log(price)))  + 
+  geom_histogram(aes(y = ..density..), colour = "black", fill = 'lightblue', bins = 50) + 
   stat_function(fun = dnorm, args = list(mean = mean(log(diamonds$price)), sd = sd(log(diamonds$price))))
-
+hist_norm
 ```
 
 Based on the Q-Q plots and the  histogram, it appears that the log of the price follows a bimodal or multimodal distribution.  Let try another couple plots to see.  
@@ -71,7 +71,7 @@ One more thing I'm going to check is the variance of the numeric variables.  If 
 diamonds %>% summarise_if(is.numeric, list(mean = mean, var = var)) %>% t()
 ```
 
-The `carat` variable is > 1 order of magnitude less than that of the `table` variable (and so close to 1 OOM smaller than `depth`), so we will go ahead and standardize all 3. 
+The `carat` variable is > 1 order of magnitude less than that of the `table` variable (and so close to 1 OOM smaller than `depth`), so we will go ahead and standardize all 3. However this should occur after the data set has been split into the training and testing data sets.  
 
 I think I have enough info for the next step...
 
@@ -81,7 +81,7 @@ We are going to remove some variables that are strongly correlated with each oth
 
 We are going to convert the price to the log of the price. Since this data set is from 2017 and I am trying to predict the value of a diamond bought in 2021, we will also adjust for inflation (approx 10.55%).
 
-Another important consideration before training the models is to deal with the categorical data.  Often, these will be converted to "dummy variables" or one-hot-encoded.  This works when there is no natural ranking or order of the categories.  Here, the cut, clarity, and color all have a natural order.  For example, a diamond with a "good" cut is better than a diamond with a "fair" cut.  If you imported this data from r (`data(diamonds)) then these variables will already be factors with the correct order.  However, if you downloaded a csv of this data set, these will need to be converted from strings to ordered factors, so I will include the transformation step here (even though it shouldn't change anything in my data set - though  it appears that the 'color' variable is in the reverse order so I'll fix that too). Note: the levels in this function are assigned from worst to best.  
+Another important consideration before training the models is to deal with the categorical data.  Often, these will be converted to "dummy variables" or one-hot-encoded.  This works when there is no natural ranking or order of the categories.  Here, the cut, clarity, and color all have a natural order.  For example, a diamond with a "good" cut is better than a diamond with a "fair" cut.  If you imported this data from r (`data(diamonds)`) then these variables will already be factors with the correct order.  However, if you downloaded a csv of this data set, these will need to be converted from strings to ordered factors, so I will include the transformation step here (even though it shouldn't change anything in my data set - though  it appears that the 'color' variable is in the reverse order so I'll fix that too). Note: the levels in this function are assigned from worst to best.  
 
 After investigating the table and depth fields some more, these values are the ratio to the average diameter of the diamond. The table % influences the light performance of the diamond (i.e. how sparkly it looks).  The depth % affect the diamond's brilliance and fire (I'm not 100% sure what this means, but we'll see if it affects price). 
 
@@ -92,8 +92,7 @@ diamonds <- diamonds %>%
   select(-price, -x, -y, -z) %>%
   mutate(cut = factor(cut, levels = c('Fair', 'Good', 'Very Good', 'Premium', 'Ideal'), ordered = TRUE),
          color = factor(color, levels = c('J', 'I', 'H', 'G', 'F', 'E', 'D'), ordered = TRUE),
-         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) %>%
-  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
+         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE))
 
 # This should show that these three variables are now ordered factors.
 str(diamonds)
@@ -102,17 +101,13 @@ str(diamonds)
 min(diamonds$cut)
 min(diamonds$color)
 min(diamonds$clarity)
-
-# And let's check out the standardized variables:
-mean(diamonds$carat)
-sd(diamonds$carat)
-
-# The other two (table & depth) look similar too, you can use the code in diamonds.r to check for yourself. 
 ```
 #### Looks good!  
 
 # Model Prep & Training
-Time to prepare the model for training:
+Time to prepare the model for training.  We will split the data into the training and testing data sets. 
+
+Note: we also standardize (scale) the data after splitting  the data set to avoid **data leakage**.  This means that the values of the training data set are affecting the values of the testing data set because their values are used in the standardization step.  This can affect the performance of the model when running the model on new data. 
 
 ```{r ml prep}
 # Prep
@@ -120,11 +115,22 @@ library(caTools)
 
 set.seed(42)
 
-split = sample.split(diamonds$log_price, SplitRatio = 0.8)
-diamonds_train = subset(diamonds, split == TRUE)
-diamonds_test = subset(diamonds, split == FALSE)
+split <- sample.split(diamonds$log_price, SplitRatio = 0.8)
+diamonds_train <- subset(diamonds, split == TRUE)
+diamonds_test <- subset(diamonds, split == FALSE)
+
+diamonds_train <- diamonds_train %>% 
+  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
+diamonds_test <- diamonds_test %>% 
+  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))  
 
 glimpse(diamonds_test)
+
+# And let's check out the standardized variables:
+mean(diamonds$carat)
+sd(diamonds$carat)
+
+# The other two (table & depth) look similar too, you can use the code in diamonds.r to check for yourself. 
 ```
 
 Now that the data set is split into the testing and training data sets, we will train a few different models, test their performance, and use the best one to make our prediction. 
@@ -132,34 +138,107 @@ Now that the data set is split into the testing and training data sets, we will 
 ### Multiple Linear Regression
 ```{r multi linear}
 mlm <- lm(log_price ~ ., diamonds_train)
-mlm
 summary(mlm)
 ```
 ## Polynomial Regression
 ```{r poly}
 poly <- lm(log_price ~ poly(carat,3) + color + cut + clarity + poly(table,3) + poly(depth,3), diamonds_train)
-poly
 summary(poly)
 ```
 Wow!  The polynomial regression appears to fit a lot better!
+
 ## XGBoost Regression
-```{r xgb}
-#library(xgboost)
-#xgb <- 
+
+XGBoost uses gradient boosted decision trees and is a really robust model which performs very well on a broad variety of applications.  It is also not as sensitive to issues that affect the performance of other models such as multicolinearity, or data normalization/standardization.
+
+```{r xgb, warning = FALSE, message = FALSE}
+library(xgboost)
+diamonds_train_xgb <- diamonds_train %>%
+  mutate_if(is.factor, as.numeric)
+diamonds_test_xgb <- diamonds_test %>%
+  mutate_if(is.factor, as.numeric)
+
+xgb <- xgboost(data = as.matrix(diamonds_train_xgb[-7]), label = diamonds_train_xgb$log_price, nrounds = 6166)
+# the rmse stopped decreasing after 6166 rounds 
 ```
 
-# Feature Importance
-```{r imp}
-library(caret)
+## Support Vector Regression (SVR)
 
-imp_poly <- varImp(poly) %>%
-  arrange(desc(Overall)) %>%
-  cbind(feature = rownames(.))
-imp_mlm <- varImp(mlm) %>%
-  cbind(feature = rownames(.))
+SVR does not depend on distributions of the underlying dependent and independent variables.  It can also be used to construct a non-linear model with the `kernel = 'radial'` option.  I think this is the case because the linear model is performing the worst so far. 
 
-imp <- full_join(imp_poly, imp_mlm, by = 'feature') %>%
-  rename(imp_mlm = Overall.y, imp_poly = Overall.x) %>%
-  select(feature, imp_mlm, imp_poly)
+```{r svr}
+library(e1071)
+svr <- svm(formula = log_price ~ .,
+                data = diamonds_train,
+                type = 'eps-regression',
+                kernel = 'radial')
+```
 
+## Decision Tree Regerssion
+Decision Trees use a set of if-then-else decision rules. The deeper the tree, the more complex the decision rules and the fitter the model.  Training DT models can sometimes lead to over-complex trees that do not generalize the data well. This is called overfitting.
+```{r tree}
+library(rpart)
+tree <- rpart(formula = log_price ~ .,
+                  data = diamonds_train,
+                  method = 'anova',
+                  model = TRUE)
+tree
+```
+
+## Random Forest Regression
+This takes the decision tree model a step further and uses many decision trees with different weights to make better predictions than if you were using a single decision tree. 
+```{r fores, warning = FALSE, message = FALSE}
+library(randomForest)
+rf <- randomForest(log_price ~ .,
+                   data = diamonds_train,
+                   ntree = 1000)
+rf
+```
+
+# Model Performance
+
+Now we will predict the log of the price of diamonds in the test data set useing each model we trained to determine which model performs best on data it has not seen.  
+
+```{r performance}
+# Make predictions and compare model performance
+mlm_pred <- predict(mlm, diamonds_test)
+poly_pred <- predict(poly, diamonds_test)
+svr_pred <- predict(svr, diamonds_test)
+tree_pred <- predict(tree, diamonds_test)
+rf_pred <- predict(rf, diamonds_test)
+xgb_pred <- predict(xgb, as.matrix(diamonds_test_xgb[-7]))
+
+# Calculate residuals (i.e. how different the predictions are from the log_price of the test data set)
+xgb_resid <- diamonds_test_xgb$log_price - xgb_pred
+library(modelr)
+resid <- diamonds_test %>%  
+  spread_residuals(mlm, poly, svr, tree, rf) %>%
+  select(mlm, poly, svr, tree, rf) %>%
+  rename_with( ~ paste0(.x, '_resid')) %>%
+  cbind(xgb_resid)
+
+predictions <- diamonds_test %>%
+  select(log_price) %>%
+  cbind(mlm_pred) %>%
+  cbind(poly_pred) %>%
+  cbind(svr_pred) %>%
+  cbind(tree_pred) %>%
+  cbind(rf_pred) %>%
+  cbind(xgb_pred) %>%
+  cbind(resid)           # This will be useful for plotting later
+
+# Calculate R-squared - this describes how much of the variability is explained by the model - the closer to 1, the better
+
+mean_log_price <- mean(diamonds_test$log_price)
+tss =  sum((diamonds_test_xgb$log_price - mean_log_price)^2 )
+
+square <- function(x) {x**2}
+r2 <- function(x) {1 - x/tss}
+
+r2 <- resid %>%
+  mutate_all(square) %>%
+  summarize_all(sum) %>%
+  mutate_all(r2)
+
+r2
 ```
