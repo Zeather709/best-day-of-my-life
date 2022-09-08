@@ -1,12 +1,13 @@
 library('tidyverse')
 library('GGally')
+install.packages("tidymodels")
 
 data(diamonds)
 
 # Exploratory 
 
 summary(diamonds)
-
+diamonds_raw <- diamonds
 ggpairs(diamonds)
 
 qq_diamonds <- qqnorm((diamonds$price),main="Normal Q-Q Plot of Price");qqline((diamonds$price))
@@ -19,8 +20,6 @@ hist_norm <- ggplot(diamonds, aes(log(price)))  +
   geom_histogram(aes(y = ..density..), colour = "black", fill = 'lightblue', bins = 75) + 
   stat_function(fun = dnorm, args = list(mean = mean(log(diamonds$price)), sd = sd(log(diamonds$price))))
 hist_norm
-
-ggplot(diamonds, aes(x=carat, color=color)) + geom_histogram(stat = 'count') + facet_grid(cut ~ clarity) + scale_colour_viridis_b(palette = 2)
 
 price <- ggplot(data = diamonds, aes(x = price))
 price + geom_histogram(binwidth = 250, colour = 'black', fill = 'mediumorchid') + labs(title = 'Cost of Diamonds in USD')
@@ -42,6 +41,7 @@ clarity + geom_boxplot()
 diamonds %>% summarise_if(is.numeric, list(mean = mean, var = var)) %>%
   t()
 
+
 mean(diamonds$carat)
 sd(diamonds$table)
 
@@ -57,8 +57,8 @@ diamonds <- diamonds %>%
   select(-price, -x, -y, -z) %>%
   mutate(cut = factor(cut, levels = c('Fair', 'Good', 'Very Good', 'Premium', 'Ideal'), ordered = TRUE),
          color = factor(color, levels = c('J', 'I', 'H', 'G', 'F', 'E', 'D'), ordered = TRUE),
-         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) %>%
-  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
+         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) #%>%
+#  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
 
 
 mean(diamonds$carat)
@@ -70,16 +70,32 @@ sd(diamonds$table)
 mean(diamonds$depth)
 sd(diamonds$depth)
 
-
+#install.packages("tictoc")
 library(caTools)
+library(tictoc)
 set.seed(42)
 split = sample.split(diamonds$log_price, SplitRatio = 0.8)
 diamonds_train = subset(diamonds, split == TRUE)
 diamonds_test = subset(diamonds, split == FALSE)
 
+diamonds_train <- diamonds_train %>% 
+  mutate_at(c('table', 'depth'), ~(scale(.) %>% as.vector))
+diamonds_test <- diamonds_test %>% 
+  mutate_at(c('table', 'depth'), ~(scale(.) %>% as.vector))  
+
+mean(diamonds_train$carat)
+sd(diamonds_train$carat)
+
+tic.clearlog()
+
+tic('mlm')
 mlm <- lm(log_price ~ carat + color + cut + clarity + table + depth, diamonds_train)
 mlm
 summary(mlm)
+toc(log = TRUE, quiet = FALSE)
+
+time_log <- tic.log(format = TRUE)
+time_log
 
 poly <- lm(log_price ~ poly(carat,3) + color + cut + clarity + poly(table,3) + poly(depth,3), diamonds_train)
 poly
@@ -92,7 +108,7 @@ diamonds_train_xgb <- diamonds_train %>%
 diamonds_test_xgb <- diamonds_test %>%
   mutate_if(is.factor, as.numeric)
 
-xgb <- xgboost(data = as.matrix(diamonds_train_xgb[-7]), label = diamonds_train_xgb$log_price, nrounds = 6166)
+xgb <- xgboost(data = as.matrix(diamonds_train_xgb[-7]), label = diamonds_train_xgb$log_price, nrounds = 6166, verbose = 0)
 # the rmse stopped decreasing after 6166 rounds 
 
 xgb_pred = predict(xgb, as.matrix(diamonds_test_xgb[-7]))
@@ -106,8 +122,6 @@ test <- data.frame(cbind(y_actual, y_predicted))
 
 xgb_scatter <- ggplot(test, aes(10**y_actual, 10**y_predicted)) + geom_point(colour = 'black', alpha = 0.2) + geom_smooth(method = lm)
 xgb_scatter
-
-ggplot(diamonds_test_xgb[x, ], aes(x = carat, y = log_price)) + geom_point(colour = 'deepskyblue') + geom_line()
 
 library(e1071)
 svr <- svm(formula = log_price ~ .,
@@ -130,10 +144,9 @@ tree
 library(randomForest)
 rf <- randomForest(log_price ~ .,
                    data = diamonds_train,
-                   ntree = 1000)
+                   ntree = 500)
 rf
 # Model Performance
-install.packages("Metrics")
 library(Metrics)
 
 # Make predictions and compare model performance
@@ -172,42 +185,74 @@ tss =  sum((diamonds_test_xgb$log_price - mean_log_price)^2 )
 square <- function(x) {x**2}
 r2 <- function(x) {1 - x/tss}
 
-r2 <- resid %>%
+r2_df <- resid %>%
   mutate_all(square) %>%
   summarize_all(sum) %>%
-  mutate_all(r2)
-r2
+  mutate_all(r2) %>%
+  gather(key = 'model', value = 'r2') %>%
+  mutate(model = str_replace(model, '_resid', ''))
+r2_df
 
 xgb_rmse = sqrt(mean(residuals^2))
 
+# Plot Performance
 
-diamonds_test_sample 
-ggplot(diamonds_test, aes(x = log_price, y = predictions$poly_pred, size = abs(resid$poly_resid))) +
-  geom_point(alpha = 0.1)
+r2_plot <- ggplot(r2_df, aes(x = model, y = r2, colour = model, fill = model)) + geom_bar(stat = 'identity')
+r2_plot + ggtitle('R-squared Values for each Model') + coord_cartesian(ylim = c(0.75, 1))
 
-# Feature Importance - maybe do this later
-library(caret)
-library(rminer)
+#varImpPlot(rf)
+rf_imp <- importance(rf) 
+rf_imp <- rf_imp %>%
+  as.data.frame() %>%
+  mutate(variable = row.names(rf_imp))
+varImpPlot(rf)
 
-imp_poly <- varImp(poly) %>%
-  arrange(desc(Overall)) %>%
-  cbind(feature = rownames(.))
-imp_mlm <- varImp(mlm) %>%
-  cbind(feature = rownames(.))
+# Training & predicting times
+time_log <- tic.log(format = TRUE)
+time_log
 
-imp <- full_join(imp_poly, imp_mlm, by = 'feature') %>%
-  rename(imp_mlm = Overall.y, imp_poly = Overall.x) %>%
-  select(feature, imp_mlm, imp_poly)
 
-install.packages("caret")
-library(caret)
+diamonds_test_sample <- diamonds_test %>%
+  left_join(predictions, by = 'log_price') %>%
+  slice_sample(n = 1000) 
+ggplot(diamonds_test_sample, aes(x = exp(log_price), y = exp(rf_pred), size = abs(rf_resid))) +
+  geom_point(alpha = 0.1) + labs(title = 'Predicted vs Actual Cost of Diamonds in USD', x = 'Price', y = 'Predicted Price', size = 'Residuals')
 
-imp_poly <- varImp(poly) %>%
-  arrange(desc(Overall)) %>%
-  cbind(feature = rownames(.))
-imp_mlm <- varImp(mlm) %>%
-  cbind(feature = rownames(.))
 
-imp <- full_join(imp_poly, imp_mlm, by = 'feature') %>%
-  rename(imp_mlm = Overall.y, imp_poly = Overall.x) %>%
-  select(feature, imp_mlm, imp_poly)
+# Real Diamonds
+
+# Build a data frame with the two diamonds
+carat <- c(0.36, 0.71, 1.5)
+clarity <- c('I1', 'VS2', 'VS1')
+color <- c('I', 'I', 'F')
+cut <- c('Premium', 'Premium', 'Premium')
+
+impute_036 <- diamonds %>%
+  filter(carat == 0.36) %>%
+  select(depth, table) %>%
+  summarize_all(mean)
+
+impute_071 <- diamonds %>%
+  filter(carat == 0.71) %>%
+  select(depth, table) %>%
+  summarize_all(mean)
+
+impute_15 <- diamonds %>%
+  filter(carat == 1.5) %>%
+  select(depth, table) %>%
+  summarize_all(mean)
+
+table_depth <- rbind(impute_036, impute_071, impute_15)
+
+real_diamonds <- data.frame(carat, clarity, color, cut) %>%
+  cbind(table_depth) %>%
+  mutate(cut = factor(cut, levels = c('Fair', 'Good', 'Very Good', 'Premium', 'Ideal'), ordered = TRUE),
+         color = factor(color, levels = c('J', 'I', 'H', 'G', 'F', 'E', 'D'), ordered = TRUE),
+         clarity = factor(clarity, levels = c('I1', 'SI2', 'SI1', 'VS2', 'VS1', 'VVS2', 'VVS1', 'IF'), ordered = TRUE)) %>%
+  mutate_at(c('table', 'depth'), ~(scale(.) %>% as.vector))
+
+predicted_values <- predict(rf, real_diamonds) 
+predicted_price <- exp(predicted_values)
+predicted_price
+
+test15 <- print(filter(diamonds_raw, carat == 1.5), n = 50)

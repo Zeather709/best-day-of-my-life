@@ -1,14 +1,13 @@
 ---
 title: "Best Day of My Life"
 author: "Heather Zurel"
-date: "2022-08-18"
+date: "2022-09-08"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-### WIP
 The best day of my life was when my partner asked me to marry him.  He was curious whether he overpaid for the diamond he bought me (he thinks he got a great deal!) - so let's see. 
 
 I'm going to use the diamonds data set to train a regression model to predict the price of diamonds based on their physical properties, including size/carat, clarity, colour, etc. 
@@ -71,7 +70,7 @@ One more thing I'm going to check is the variance of the numeric variables.  If 
 diamonds %>% summarise_if(is.numeric, list(mean = mean, var = var)) %>% t()
 ```
 
-The `carat` variable is > 1 order of magnitude less than that of the `table` variable (and so close to 1 OOM smaller than `depth`), so we will go ahead and standardize all 3. However this should occur after the data set has been split into the training and testing data sets.  
+The `carat` variable is > 1 order of magnitude less than that of the `table` variable (and so close to 1 OOM smaller than `depth`), so we will go ahead and standardize table and depth. However this should occur after the data set has been split into the training and testing data sets.  
 
 I think I have enough info for the next step...
 
@@ -112,101 +111,124 @@ Note: we also standardize (scale) the data after splitting  the data set to avoi
 ```{r ml prep}
 # Prep
 library(caTools)
+library(tictoc)
 
 set.seed(42)
+
+tic.clearlog()
 
 split <- sample.split(diamonds$log_price, SplitRatio = 0.8)
 diamonds_train <- subset(diamonds, split == TRUE)
 diamonds_test <- subset(diamonds, split == FALSE)
 
 diamonds_train <- diamonds_train %>% 
-  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))
+  mutate_at(c('table', 'depth'), ~(scale(.) %>% as.vector))
 diamonds_test <- diamonds_test %>% 
-  mutate_at(c('carat', 'table', 'depth'), ~(scale(.) %>% as.vector))  
+  mutate_at(c('table', 'depth'), ~(scale(.) %>% as.vector))  
 
 glimpse(diamonds_test)
 
 # And let's check out the standardized variables:
-mean(diamonds$carat)
-sd(diamonds$carat)
+mean(diamonds_test$table)
+sd(diamonds_test$table)
 
-# The other two (table & depth) look similar too, you can use the code in diamonds.r to check for yourself. 
+# The other one (depth) look similar too, you can use the code in diamonds.r to check for yourself. 
 ```
 
 Now that the data set is split into the testing and training data sets, we will train a few different models, test their performance, and use the best one to make our prediction. 
 
 ### Multiple Linear Regression
 ```{r multi linear}
+tic('mlm')
 mlm <- lm(log_price ~ ., diamonds_train)
+toc(log = TRUE, quiet = TRUE)
 summary(mlm)
 ```
+
 ## Polynomial Regression
 ```{r poly}
+tic('poly')
 poly <- lm(log_price ~ poly(carat,3) + color + cut + clarity + poly(table,3) + poly(depth,3), diamonds_train)
+toc(log = TRUE, quiet = TRUE)
 summary(poly)
 ```
-Wow!  The polynomial regression appears to fit a lot better!
-
-## XGBoost Regression
-
-XGBoost uses gradient boosted decision trees and is a really robust model which performs very well on a broad variety of applications.  It is also not as sensitive to issues that affect the performance of other models such as multicolinearity, or data normalization/standardization.
-
-```{r xgb, warning = FALSE, message = FALSE}
-library(xgboost)
-diamonds_train_xgb <- diamonds_train %>%
-  mutate_if(is.factor, as.numeric)
-diamonds_test_xgb <- diamonds_test %>%
-  mutate_if(is.factor, as.numeric)
-
-xgb <- xgboost(data = as.matrix(diamonds_train_xgb[-7]), label = diamonds_train_xgb$log_price, nrounds = 6166)
-# the rmse stopped decreasing after 6166 rounds 
-```
+Wow!  The polynomial regression appears to fit a lot better! 
 
 ## Support Vector Regression (SVR)
 
 SVR does not depend on distributions of the underlying dependent and independent variables.  It can also be used to construct a non-linear model with the `kernel = 'radial'` option.  I think this is the case because the linear model is performing the worst so far. 
 
 ```{r svr}
+tic('svr')
 library(e1071)
 svr <- svm(formula = log_price ~ .,
                 data = diamonds_train,
                 type = 'eps-regression',
                 kernel = 'radial')
+toc(log = TRUE, quiet = TRUE)
 ```
 
 ## Decision Tree Regerssion
+
 Decision Trees use a set of if-then-else decision rules. The deeper the tree, the more complex the decision rules and the fitter the model.  Training DT models can sometimes lead to over-complex trees that do not generalize the data well. This is called overfitting.
+
 ```{r tree}
+tic('tree')
 library(rpart)
 tree <- rpart(formula = log_price ~ .,
                   data = diamonds_train,
                   method = 'anova',
                   model = TRUE)
+toc(log = TRUE, quiet = TRUE)
 tree
 ```
 
 ## Random Forest Regression
-This takes the decision tree model a step further and uses many decision trees with different weights to make better predictions than if you were using a single decision tree. 
-```{r fores, warning = FALSE, message = FALSE}
+
+This takes the decision tree model a step further and uses many decision trees to make better predictions than if you were using any of the single decision trees in this model. 
+
+```{r forest, warning = FALSE, message = FALSE}
+tic('rf')
 library(randomForest)
 rf <- randomForest(log_price ~ .,
                    data = diamonds_train,
-                   ntree = 1000)
+                   ntree = 500,
+                   importance = TRUE)
+toc(log = TRUE, quiet = TRUE)
 rf
+```
+
+## XGBoost Regression
+
+XGBoost uses gradient boosted decision trees and is a really robust model which performs very well on a broad variety of applications.  It is also not as sensitive to issues that affect the performance of some other models such as multicolinearity, or data normalization/standardization.
+
+```{r xgb, warning = FALSE, message = FALSE, echo = TRUE, results = 'hide'}
+tic('xgb')
+library(xgboost)
+diamonds_train_xgb <- diamonds_train %>%
+  mutate_if(is.factor, as.numeric)
+diamonds_test_xgb <- diamonds_test %>%
+  mutate_if(is.factor, as.numeric)
+
+xgb <- xgboost(data = as.matrix(diamonds_train_xgb[-7]), label = diamonds_train_xgb$log_price, nrounds = 6166, verbose = 0)
+# the rmse stopped decreasing after 6166 rounds 
+toc(log = TRUE, quiet = TRUE)
 ```
 
 # Model Performance
 
-Now we will predict the log of the price of diamonds in the test data set useing each model we trained to determine which model performs best on data it has not seen.  
+Now we will predict the log of the price of diamonds in the test data set using each model we trained to determine which model performs best on data it has not seen.  
 
 ```{r performance}
 # Make predictions and compare model performance
+tic('predict_all')
 mlm_pred <- predict(mlm, diamonds_test)
 poly_pred <- predict(poly, diamonds_test)
 svr_pred <- predict(svr, diamonds_test)
 tree_pred <- predict(tree, diamonds_test)
 rf_pred <- predict(rf, diamonds_test)
 xgb_pred <- predict(xgb, as.matrix(diamonds_test_xgb[-7]))
+toc(log = TRUE, quiet = TRUE)
 
 # Calculate residuals (i.e. how different the predictions are from the log_price of the test data set)
 xgb_resid <- diamonds_test_xgb$log_price - xgb_pred
@@ -235,10 +257,48 @@ tss =  sum((diamonds_test_xgb$log_price - mean_log_price)^2 )
 square <- function(x) {x**2}
 r2 <- function(x) {1 - x/tss}
 
-r2 <- resid %>%
+r2_df <- resid %>%
   mutate_all(square) %>%
   summarize_all(sum) %>%
-  mutate_all(r2)
-
-r2
+  mutate_all(r2) %>%
+  gather(key = 'model', value = 'r2') %>%
+  mutate(model = str_replace(model, '_resid', ''))
+r2_df
 ```
+
+# Visualize Performance of the Model
+
+The Random Forest model performed best according to the R^2 value - this is a measure of how much of the variability in the data set is explained by the model, so we will mostly focus on this one for visualizations.  It is equal to 1 - RMSE (root mean square error, which describe how different all the predictions are from the true values in the `y_test` data set).
+
+```{r vis}
+library(ggplot2)
+r2_plot <- ggplot(r2_df, aes(x = model, y = r2, colour = model, fill = model)) + geom_bar(stat = 'identity')
+r2_plot + ggtitle('R-squared Values for each Model') + coord_cartesian(ylim = c(0.75, 1))
+
+sample <- predictions %>%
+  slice_sample(n = 1000) 
+ggplot(sample, aes(x = exp(log_price), y = exp(rf_pred), size = abs(rf_resid))) +
+  geom_point(alpha = 0.1) + labs(title = 'Predicted vs Actual Cost of Diamonds in USD', x = 'Price', y = 'Predicted Price', size = 'Residuals')
+```
+
+The **Random Forest** model is performing the best out of all the models we tried.  This isn't surprising, as it is an **ensemble method** which means it uses the concordance between multiple models to make better predictions than any of the models could make on their own.  XGBoost is another example of an ensemble method, and also performed very well.  In the second plot, the size is proportionate to the absolute value of the residuals, which means how different the prediction was from the real value. 
+
+## Feature Importance 
+
+Which variable(s) were the most important for predicting the price of the diamonds? 
+
+```{r feature importance}
+varImpPlot(rf)
+```
+
+The values on the x axis indicate how much the prediction error would increase if that variable were not included in the model.  As expected, the carat (or size) is the most important variable.  Even though table and depth are supposed to impact how sparkly the diamond appears, they don't actually have that big an effect on the price.  
+
+## How long did it take to train models and make predictions?
+
+```{r time}
+# Training & predicting times
+time_log <- tic.log(format = TRUE)
+time_log
+```
+
+So the best performing models are taking the longest to train.  Not a huge surprise since they actually include many models.  Keep in mind that this is not a large data set.  Most models I have trained for work take hours and hours (I mostly set them up to run overnight).  This can be sped up with a really powerful machine in AWS or even a cluster of machines.  
